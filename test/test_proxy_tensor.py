@@ -145,6 +145,22 @@ class TestGenericProxyTensor(TestCase):
         r2 = f(*new_inps)
         self.assertEqual(r1, r2)
 
+    def test_pre_autograd_mode_stack(self):
+        def f(a):
+            b = torch.ones(4, 4)
+            return torch.matmul(a, b)
+        # We expect to see matmul in the trace - it should NOT be decomposed into mm.
+        # Also, torch.ones() doesn't show up in the trace.
+        # This is annoying but expected: ones() never dispatches to the Autograd dispatch key,
+        # so our mode never sees it - it goes directly to the BackendSelect key.
+        fx_g = make_fx(f, pre_autograd=True)(torch.ones(4, 4))
+        self.assertExpectedInline(fx_g.code.strip(), """\
+def forward(self, a_1):
+    ones = torch.ops.aten.ones.default([4, 4], device = device(type='cpu'), pin_memory = False)
+    matmul = torch.ops.aten.matmul.default(a_1, ones);  a_1 = ones = None
+    return matmul""")
+
+
     def test_make_fx_simple(self):
         def f(x):
             return torch.sin(x)
