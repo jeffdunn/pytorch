@@ -162,6 +162,11 @@ def compile_fx_inner(
         cudagraphs = config.triton.cudagraphs
 
     shape_env = _shape_env_from_inputs(example_inputs)
+
+    graph_name = torch._functorch.aot_autograd.get_graph_being_compiled()
+    graph_no_id_suffix = graph_name[0 : -(len(str(graph_id)) + 1)]
+    is_inference = graph_no_id_suffix[-(len("inference")) :] == "inference"
+
     fake_mode = fake_mode_from_tensors(
         example_inputs
     ) or torch._subclasses.FakeTensorMode(allow_non_fake_inputs=True)
@@ -183,6 +188,8 @@ def compile_fx_inner(
             if aot_mode:
                 return compiled_fn
 
+    output = list(gm.graph.nodes)[-1]
+    assert len(output.args) == 1
     if cudagraphs:
         complex_memory_overlap_inputs = any(
             complex_memory_overlap(t) for t in example_inputs
@@ -200,6 +207,8 @@ def compile_fx_inner(
                 example_inputs,
                 static_input_idxs=range(num_fixed),
                 device_index=next(iter(graph.device_idxs)),
+                is_backward=is_backward,
+                is_inference=is_inference,
             )
         else:
             BoxedBool.disable(cudagraphs)
@@ -267,14 +276,25 @@ def align_inputs(model, inputs, static_input_idxs=()):
 
 
 @dynamo_utils.dynamo_timed
-def cudagraphify(model, inputs, static_input_idxs=(), *, device_index: int):
+def cudagraphify(
+    model,
+    inputs,
+    static_input_idxs=(),
+    *,
+    device_index: int,
+    is_backward: bool,
+    is_inference: bool,
+):
     from torch._inductor.cudagraph_trees import (
         cudagraphify_impl as new_cudagraphify_impl,
     )
 
     if config.triton.cudagraph_trees:
         cudagraphify_fn = functools.partial(
-            new_cudagraphify_impl, device_index=device_index
+            new_cudagraphify_impl,
+            device_index=device_index,
+            is_backward=is_backward,
+            is_inference=is_inference,
         )
     else:
         cudagraphify_fn = cudagraphify_impl
